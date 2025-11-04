@@ -5,47 +5,71 @@ import { Avatar } from "./ui/avatar";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { cn } from "../lib/utils";
+import { useSocket } from "../hooks/useSocket";
 
 const longDateFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
-  timeStyle: "short"
+  timeStyle: "short",
 });
 
 export default function ChatWindow({
-  api,
+  messagesApi,
   conversation,
   conversationId,
   currentUser,
   onConversationSeen,
   onMessageSent,
-  isBootstrapping
+  isBootstrapping,
+  getToken
 }) {
+  const service = useMemo(() => {
+    if (messagesApi) return messagesApi;
+    return {
+      async list() {
+        return [];
+      },
+      async send() {
+        throw new Error("messagesApi not provided");
+      }
+    };
+  }, [messagesApi]);
+
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState(null);
   const viewportRef = useRef(null);
+  const conversationIdRef = useRef(conversationId);
 
+  const socket = useSocket(getToken);
+
+  // determine the other participant
   const otherMember = useMemo(() => {
     if (!conversation || !currentUser?.id) return null;
     if (conversation.isGroup) return null;
-    return conversation.members?.find((member) => member.clerkUserId !== currentUser.id) || null;
+    return (
+      conversation.members?.find(
+        (member) => member.clerkUserId !== currentUser.id
+      ) || null
+    );
   }, [conversation, currentUser]);
 
+  // reset state when changing conversations
   useEffect(() => {
     setMessages([]);
     setDraft("");
     setError(null);
   }, [conversationId]);
 
+  // load conversation history
   useEffect(() => {
     if (!conversationId) return;
     let active = true;
     setIsLoading(true);
     (async () => {
       try {
-        const data = await api.messages.list(conversationId);
+        const data = await service.list(conversationId);
         if (!active) return;
         setMessages(Array.isArray(data) ? data : []);
         onConversationSeen?.(conversationId);
@@ -60,32 +84,71 @@ export default function ChatWindow({
         }
       }
     })();
-
     return () => {
       active = false;
     };
-  }, [api, conversationId, onConversationSeen]);
+  }, [service, conversationId, onConversationSeen]);
 
+  // auto-scroll to bottom when new messages arrive
   useEffect(() => {
-    // Auto-scroll to last message
     const node = viewportRef.current;
     if (!node) return;
     node.scrollTo({
       top: node.scrollHeight,
-      behavior: "smooth"
+      behavior: "smooth",
     });
   }, [messages]);
 
+  // join conversation room via socket.io
+  useEffect(() => {
+    conversationIdRef.current = conversationId;
+    if (!socket || !conversationId) return;
+
+    socket.emit("conversation:join", conversationId);
+
+    // handle incoming messages in real-time
+    const handleNewMessage = ({ conversationId: id, message }) => {
+      if (id === conversationIdRef.current) {
+        setMessages((prev) => [...prev, message]);
+      }
+    };
+
+    // handle conversation updates (e.g., unread counts)
+    const handleConversationUpdate = ({ conversationId: id }) => {
+      if (id === conversationIdRef.current) {
+        onConversationSeen?.(id);
+      }
+    };
+
+    socket.on("message:new", handleNewMessage);
+    socket.on("conversation:update", handleConversationUpdate);
+
+    return () => {
+      socket.off("message:new", handleNewMessage);
+      socket.off("conversation:update", handleConversationUpdate);
+      socket.emit("conversation:leave", conversationIdRef.current);
+    };
+  }, [socket, conversationId, onConversationSeen]);
+
+  // sending message handler
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!draft.trim() || !conversationId) return;
 
     setIsSending(true);
     setError(null);
+
     try {
-      const nextMessage = await api.messages.send(conversationId, draft.trim());
+      const nextMessage = await service.send(conversationId, draft.trim());
       setMessages((prev) => [...prev, nextMessage]);
       onMessageSent?.(conversationId, nextMessage);
+
+      // emit real-time event so others see instantly
+      socket?.emit("message:new", {
+        conversationId,
+        message: nextMessage,
+      });
+
       setDraft("");
     } catch (err) {
       console.error("Failed to send message", err);
@@ -107,7 +170,8 @@ export default function ChatWindow({
     return (
       <section className="flex flex-1 flex-col items-center justify-center rounded-3xl border border-white/10 bg-white/[0.03] p-10 text-center text-sm text-slate-400">
         <p className="max-w-xs">
-          Choose a conversation from the sidebar or start a new one to begin chatting.
+          Choose a conversation from the sidebar or start a new one to begin
+          chatting.
         </p>
       </section>
     );
@@ -118,26 +182,34 @@ export default function ChatWindow({
       <header className="flex items-center justify-between border-b border-white/10 bg-white/[0.04] px-6 py-4">
         <div className="flex items-center gap-3">
           <Avatar
-            src={conversation.isGroup ? conversation.avatar : otherMember?.avatarUrl}
+            src={
+              conversation.isGroup
+                ? conversation.avatar
+                : otherMember?.avatarUrl
+            }
             alt={conversation.name}
             fallback={conversation.name}
           />
           <div>
-            <p className="text-sm font-semibold text-white">{conversation.name}</p>
+            <p className="text-sm font-semibold text-white">
+              {conversation.name}
+            </p>
             <p className="text-xs text-slate-400">
               {otherMember?.lastSeenAt
-                ? `Last seen ${longDateFormatter.format(new Date(otherMember.lastSeenAt))}`
+                ? `Last seen ${longDateFormatter.format(
+                    new Date(otherMember.lastSeenAt)
+                  )}`
                 : conversation.isGroup
-                  ? `${conversation.members?.length || 0} participants`
-                  : "Presence updates coming soon"}
+                ? `${conversation.members?.length || 0} participants`
+                : "Online"}
             </p>
           </div>
         </div>
         <Badge
           variant="outline"
-          className="hidden rounded-full border-indigo-400/40 bg-indigo-500/10 px-3 py-1 text-xs font-medium text-indigo-100 sm:inline-flex"
+          className="hidden rounded-full border-emerald-400/40 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-100 sm:inline-flex"
         >
-          Static REST chat
+          Live Socket Chat
         </Badge>
       </header>
 
@@ -171,7 +243,7 @@ export default function ChatWindow({
           <Input
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder="Write an uplifting message…"
+            placeholder="Write a message..."
             disabled={isSending}
           />
           <Button
@@ -183,9 +255,7 @@ export default function ChatWindow({
           </Button>
         </form>
         {error && (
-          <p className="mt-2 text-xs text-red-300">
-            {error}
-          </p>
+          <p className="mt-2 text-xs text-red-300">{error}</p>
         )}
       </footer>
     </section>

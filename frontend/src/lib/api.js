@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL;
-const TOKEN_TEMPLATE = import.meta.env.VITE_CLERK_JWT_TEMPLATE;
+const TOKEN_TEMPLATE = import.meta.env.VITE_CLERK_JWT_TEMPLATE || "integration_fallback";
 
 const createAuthenticatedClient = (getToken) => {
   const instance = axios.create({
@@ -13,13 +13,21 @@ const createAuthenticatedClient = (getToken) => {
 
   instance.interceptors.request.use(async (config) => {
     if (typeof getToken !== "function") return config;
-    const token = await getToken(TOKEN_TEMPLATE ? { template: TOKEN_TEMPLATE } : undefined);
-    if (token) {
-      config.headers = {
-        ...config.headers,
-        Authorization: `Bearer ${token}`
-      };
+
+    try {
+      const token = await getToken({ template: TOKEN_TEMPLATE, skipCache: true });
+      if (token) {
+        config.headers = {
+          ...config.headers,
+          Authorization: `Bearer ${token}`
+        };
+      } else {
+        console.warn("Clerk getToken returned empty value; request will be unauthenticated");
+      }
+    } catch (error) {
+      console.error("Failed to retrieve Clerk token", error);
     }
+
     return config;
   });
 

@@ -194,7 +194,7 @@ export default function ChatLayout({
       />
 
       <ChatWindow
-        api={api}
+        messagesApi={api.messages}
         conversation={activeConversation}
         conversationId={activeConversationId}
         currentUser={{
@@ -205,6 +205,7 @@ export default function ChatLayout({
         onConversationSeen={handleConversationSeen}
         onMessageSent={handleMessageSent}
         isBootstrapping={isBootstrapping}
+        getToken={getToken}
       />
     </div>
   );

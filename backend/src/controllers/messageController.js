@@ -130,5 +130,14 @@ exports.sendMessage = asyncHandler(async (req, res) => {
 
   await conversation.save();
 
+
+  io.to(conversationId).emit("message:new", {
+    conversationId, message
+  });
+
+  conversation.members
+    .filter((memberId) => memberId !== currentUserId )
+    .forEach((memberId) => io.to(memberId).emit("conversation:update", { conversationId }));
+
   res.status(201).json(message);
 });
